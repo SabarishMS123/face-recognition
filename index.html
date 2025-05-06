@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facial Expression Detector</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/3.18.0/tf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/face-api.js/0.22.2/face-api.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .container {
+            width: 100%;
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            text-align: center;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        .video-container {
+            position: relative;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        #video {
+            width: 100%;
+            border-radius: 8px;
+            background-color: #000;
+        }
+        
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        
+        .emotion-container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .emotion-label {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .emotion-value {
+            font-size: 40px;
+            font-weight: bold;
+            color: #4285f4;
+            margin-bottom: 15px;
+        }
+        
+        .status {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        
+        .loading {
+            font-size: 18px;
+            color: #666;
+            margin: 20px 0;
+        }
+        
+        .progress-container {
+            width: 100%;
+            background-color: #e0e0e0;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .progress-bar {
+            height: 10px;
+            background-color: #4285f4;
+            border-radius: 5px;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .control-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: #3367d6;
+        }
+        
+        button:disabled {
+            background-color: #a9a9a9;
+            cursor: not-allowed;
+        }
+        
+        .error {
+            color: #d93025;
+            margin: 10px 0;
+        }
+        
+        .status-icon {
+            font-size: 36px;
+            margin-right: 10px;
+        }
+        
+        .additional-info {
+            margin-top: 10px;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Facial Expression Detector</h1>
+        
+        <div class="loading" id="loading">
+            <div>Loading face detection models...</div>
+            <div class="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+        </div>
+        
+        <div class="control-buttons">
+            <button id="start-btn" disabled>Start Camera</button>
+            <button id="stop-btn" disabled>Stop Camera</button>
+        </div>
+        
+        <div class="video-container">
+            <video id="video" autoplay muted></video>
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="emotion-container">
+            <div class="emotion-label">Current State:</div>
+            <div class="emotion-value" id="emotion-value">Waiting for face...</div>
+            <div class="additional-info" id="additional-info"></div>
+        </div>
+        
+        <div class="status" id="status">Camera is off</div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const emotionValue = document.getElementById('emotion-value');
+        const additionalInfo = document.getElementById('additional-info');
+        const status = document.getElementById('status');
+        const startBtn = document.getElementById('start-btn');
+        const stopBtn = document.getElementById('stop-btn');
+        const loading = document.getElementById('loading');
+        const progressBar = document.getElementById('progress-bar');
+
+        // Variables
+        let ctx;
+        let mediaStream = null;
+        let isModelLoaded = false;
+        let isVideoRunning = false;
+        let detectionInterval;
+
+        // Custom facial expression mappings
+        const customExpressions = {
+            happy: "I'm happy",
+            sad: "I'm sad",
+            angry: "I'm in danger",
+            fearful: "I have anxiety",
+            disgusted: "I'm thirsty",
+            surprised: "I'm surprised",
+            neutral: "I'm neutral"
+        };
+
+        // Additional conditions we might detect
+        const additionalConditions = {
+            feverCheck: (expressions) => {
+                // Checking for patterns that might indicate fever
+                // Higher angry/sad and lower happy might indicate discomfort
+                if (expressions.sad > 0.4 && expressions.happy < 0.1) {
+                    return "I might have fever";
+                }
+                return null;
+            },
+            
+            lyingCheck: (expressions) => {
+                // Checking for signs that might indicate lying
+                // Mixed expressions like surprise and fear together
+                if (expressions.surprised > 0.3 && expressions.fearful > 0.3) {
+                    return "I might be lying";
+                }
+                return null;
+            }
+        };
+
+        // Load face detection models
+        async function loadModels() {
+            try {
+                // Update progress bar
+                const updateProgress = (percent) => {
+                    progressBar.style.width = `${percent}%`;
+                };
+
+                updateProgress(10);
+                await faceapi.nets.tinyFaceDetector.load('./tiny_face_detector_model-weights_manifest.json');
+                updateProgress(40);
+                await faceapi.nets.faceLandmark68Net.load('./face_landmark_68_model-weights_manifest.json');
+                updateProgress(60);
+                await faceapi.nets.faceRecognitionNet.load('./face_recognition_model-weights_manifest.json');
+                updateProgress(80);
+                await faceapi.nets.faceExpressionNet.load('./face_expression_model-weights_manifest.json');
+                updateProgress(100);
+
+                // Enable start button once models are loaded
+                startBtn.disabled = false;
+                loading.style.display = 'none';
+                status.textContent = 'Models loaded. Click Start Camera to begin.';
+                isModelLoaded = true;
+            } catch (error) {
+                console.error('Error loading models:', error);
+                status.textContent = 'Error loading models. Please refresh and try again.';
+                status.classList.add('error');
+            }
+        }
+
+        // Start video stream
+        async function startVideo() {
+            try {
+                if (!isModelLoaded) {
+                    status.textContent = 'Please wait for models to load.';
+                    return;
+                }
+
+                // Request camera access
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user' }
+                });
+                
+                video.srcObject = mediaStream;
+                
+                // Set up canvas for drawing face detections
+                canvas.width = video.width;
+                canvas.height = video.height;
+                ctx = canvas.getContext('2d');
+                
+                isVideoRunning = true;
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                status.textContent = 'Camera is on. Detecting facial expressions...';
+                
+                // Start detection loop
+                startDetection();
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+                status.textContent = 'Error accessing camera. Please check permissions.';
+                status.classList.add('error');
+            }
+        }
+
+        // Stop video stream
+        function stopVideo() {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+                isVideoRunning = false;
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                status.textContent = 'Camera is off';
+                emotionValue.textContent = 'Waiting for face...';
+                additionalInfo.textContent = '';
+                
+                // Clear detection interval
+                clearInterval(detectionInterval);
+                
+                // Clear canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        // Start face detection
+        function startDetection() {
+            // Update canvas dimensions when video dimensions change
+            video.addEventListener('play', () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            });
+            
+            // Start detection loop
+            detectionInterval = setInterval(async () => {
+                if (!isVideoRunning) return;
+                
+                try {
+                    // Detect faces
+                    const detections = await faceapi.detectAllFaces(
+                        video, 
+                        new faceapi.TinyFaceDetectorOptions()
+                    ).withFaceLandmarks().withFaceExpressions();
+                    
+                    // Clear canvas
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    // If no faces detected
+                    if (detections.length === 0) {
+                        emotionValue.textContent = 'No face detected';
+                        additionalInfo.textContent = '';
+                        return;
+                    }
+                    
+                    // Resize detections to match display size
+                    const resizedDetections = faceapi.resizeResults(
+                        detections, 
+                        { width: canvas.width, height: canvas.height }
+                    );
+                    
+                    // Draw detections on canvas
+                    faceapi.draw.drawDetections(canvas, resizedDetections);
+                    faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+                    
+                    // Get the dominant expression
+                    if (resizedDetections.length > 0) {
+                        const expressions = resizedDetections[0].expressions;
+                        const dominantExpression = getDominantExpression(expressions);
+                        
+                        // Map the dominant expression to custom mapping
+                        emotionValue.textContent = customExpressions[dominantExpression] || dominantExpression;
+                        
+                        // Check for additional conditions
+                        let additionalText = '';
+                        for (const check in additionalConditions) {
+                            const result = additionalConditions[check](expressions);
+                            if (result) {
+                                additionalText += result + ' ';
+                            }
+                        }
+                        
+                        additionalInfo.textContent = additionalText;
+                    }
+                } catch (error) {
+                    console.error('Detection error:', error);
+                }
+            }, 100);
+        }
+
+        // Get the dominant expression from expression object
+        function getDominantExpression(expressions) {
+            return Object.keys(expressions).reduce(
+                (maxKey, key) => expressions[key] > expressions[maxKey] ? key : maxKey, 
+                Object.keys(expressions)[0]
+            );
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', startVideo);
+        stopBtn.addEventListener('click', stopVideo);
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadModels();
+        });
+    </script>
+</body>
+</html>
